@@ -83,7 +83,8 @@ grafana-homelab/
 | kube-prometheus-stack | 87.2.1 | v0.92.0 (Prometheus Operator) |
 | Loki | 7.0.0 | 3.6.7 |
 | Tempo | 1.24.4 | 2.9.0 |
-| Grafana Alloy | 1.10.0 | v1.17.0 |
+| Grafana Alloy (in-cluster) | 1.10.0 | v1.17.0 |
+| Grafana Alloy (external agents) | — | v1.17.0 |
 | Tailscale Operator | 1.98.4 | v1.98.4 |
 
 ---
@@ -370,7 +371,7 @@ echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] \
   https://apt.grafana.com stable main" \
   | sudo tee /etc/apt/sources.list.d/grafana.list
 
-sudo apt-get update && sudo apt-get install -y alloy
+sudo apt-get update && sudo apt-get install -y alloy=1.17.0
 sudo cp configs/alloy-linux-mac.alloy /etc/alloy/config.alloy
 
 sudo systemctl edit alloy
@@ -405,7 +406,7 @@ gpgcheck=1
 gpgkey=https://rpm.grafana.com/gpg.key
 EOF
 
-sudo dnf install alloy -y
+sudo dnf install alloy-1.17.0 -y
 sudo cp configs/alloy-linux-mac.alloy /etc/alloy/config.alloy
 sudo systemctl edit alloy    # same [Service] block as above
 sudo systemctl enable --now alloy
@@ -416,7 +417,7 @@ sudo systemctl enable --now alloy
 ### macOS (Homebrew)
 
 ```bash
-brew install grafana/grafana/alloy
+brew install grafana/grafana/alloy@1.17.0
 
 mkdir -p "$(brew --prefix)/etc/alloy"
 cp configs/alloy-linux-mac.alloy "$(brew --prefix)/etc/alloy/config.alloy"
@@ -434,7 +435,7 @@ brew services start grafana/grafana/alloy
 ### Windows (PowerShell — run as Administrator)
 
 ```powershell
-winget install GrafanaLabs.Alloy
+winget install GrafanaLabs.Alloy --version 1.17.0
 
 Copy-Item configs\alloy-windows.alloy `
   "C:\Program Files\GrafanaLabs\Alloy\config.alloy" -Force
