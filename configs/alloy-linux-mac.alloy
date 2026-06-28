@@ -1,0 +1,161 @@
+// ================================================================
+// Grafana Alloy — External Linux / macOS Host Agent
+// ================================================================
+//
+// USAGE
+// ──────
+// Linux  (systemd override — sudo systemctl edit alloy):
+//   [Service]
+//   Environment="PROMETHEUS_URL=https://prometheus-homelab.<tailnet>.ts.net/api/v1/write"
+//   Environment="LOKI_URL=https://loki-homelab.<tailnet>.ts.net/loki/api/v1/push"
+//   Environment="TEMPO_URL=https://tempo-homelab.<tailnet>.ts.net"
+//
+// macOS  (replace env() calls directly in this file):
+//   sed -i '' 's|env("PROMETHEUS_URL")|"https://prometheus-homelab.<tailnet>.ts.net/api/v1/write"|g' config.alloy
+//   sed -i '' 's|env("LOKI_URL")|"https://loki-homelab.<tailnet>.ts.net/loki/api/v1/push"|g' config.alloy
+//   sed -i '' 's|env("TEMPO_URL")|"https://tempo-homelab.<tailnet>.ts.net"|g' config.alloy
+//
+// ================================================================
+
+// ────────────────────────────────────────────────────────────
+// METRICS  —  Host System (Linux / macOS)
+// ────────────────────────────────────────────────────────────
+prometheus.exporter.unix "host" {
+  // Most collectors work on both Linux and macOS.
+  // On macOS: diskstats and some filesystem stats may be limited.
+  enable_collectors = [
+    "boottime",
+    "cpu",
+    "diskstats",
+    "filesystem",
+    "loadavg",
+    "meminfo",
+    "netdev",
+    "os",
+    "time",
+    "uname",
+  ]
+}
+
+prometheus.scrape "host_metrics" {
+  targets         = prometheus.exporter.unix.host.targets
+  forward_to      = [prometheus.relabel.host_labels.receiver]
+  scrape_interval = "60s"
+  job_name        = "integrations/node_exporter"
+}
+
+prometheus.relabel "host_labels" {
+  forward_to = [prometheus.remote_write.homelab.receiver]
+
+  rule {
+    action       = "replace"
+    target_label = "hostname"
+    replacement  = constants.hostname
+  }
+
+  // Strip .local suffix added by macOS (e.g. Geyvins-Laptop.local → Geyvins-Laptop)
+  rule {
+    action        = "replace"
+    source_labels = ["hostname"]
+    target_label  = "hostname"
+    regex         = "^([^.]+)\\.local$"
+    replacement   = "$1"
+  }
+
+  rule {
+    action       = "replace"
+    target_label = "cluster"
+    replacement  = "homelab"
+  }
+}
+
+prometheus.remote_write "homelab" {
+  endpoint {
+    url = env("PROMETHEUS_URL")
+
+    queue_config {
+      retry_on_http_429    = true
+      max_samples_per_send = 2000
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// LOGS  —  System Log Files
+// ────────────────────────────────────────────────────────────
+// Note: macOS Unified Logging (Console.app entries) uses a private
+// binary format and is not available as plain files. Only file-based
+// logs (below) are collected.
+
+local.file_match "host_logs" {
+  path_targets = [
+    // ── Linux ──────────────────────────────────────────────
+    {__path__ = "/var/log/syslog",          "job" = "syslog"},
+    {__path__ = "/var/log/auth.log",        "job" = "auth"},
+    {__path__ = "/var/log/kern.log",        "job" = "kernel"},
+    {__path__ = "/var/log/dpkg.log",        "job" = "dpkg"},
+    {__path__ = "/var/log/apt/history.log", "job" = "apt"},
+    {__path__ = "/var/log/*.log",           "job" = "system"},
+    // ── RHEL / Fedora / Rocky ──────────────────────────────
+    {__path__ = "/var/log/messages",        "job" = "syslog"},
+    {__path__ = "/var/log/secure",          "job" = "auth"},
+    // ── macOS ──────────────────────────────────────────────
+    {__path__ = "/var/log/system.log",      "job" = "macos-system"},
+    {__path__ = "/private/var/log/*.log",   "job" = "macos-private"},
+  ]
+}
+
+loki.source.file "host_logs" {
+  targets               = local.file_match.host_logs.targets
+  forward_to            = [loki.process.host_labels.receiver]
+  legacy_positions_file = "/tmp/alloy-positions.yaml"
+}
+
+loki.process "host_labels" {
+  forward_to = [loki.write.homelab.receiver]
+
+  stage.static_labels {
+    values = {
+      hostname = constants.hostname,
+      cluster  = "homelab",
+      os       = "linux",
+    }
+  }
+}
+
+loki.write "homelab" {
+  endpoint {
+    url = env("LOKI_URL")
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// TRACES  —  OTLP Receiver → Tempo (HTTPS)
+// ────────────────────────────────────────────────────────────
+// Applications on this host point their OTLP exporter to:
+//   gRPC → localhost:4317
+//   HTTP → localhost:4318
+// Alloy receives them and forwards to Tempo over HTTPS using
+// otelcol.exporter.otlphttp (port 443, /v1/traces path appended
+// automatically). Tailscale HTTPS certificates are Let's Encrypt
+// signed — no custom CA configuration required.
+
+otelcol.receiver.otlp "app_traces" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    traces = [otelcol.exporter.otlphttp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlphttp "tempo" {
+  client {
+    // Base URL — Alloy appends /v1/traces automatically
+    endpoint = env("TEMPO_URL")
+  }
+}

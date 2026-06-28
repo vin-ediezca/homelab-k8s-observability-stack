@@ -1,0 +1,171 @@
+// ================================================================
+// Grafana Alloy — External Windows Host Agent
+// ================================================================
+//
+// SETUP (run PowerShell as Administrator)
+// ──────
+// 1. Install Alloy:
+//      winget install GrafanaLabs.Alloy
+//
+// 2. Copy this file to the Alloy config path:
+//      Copy-Item alloy-windows.alloy `
+//        "C:\Program Files\GrafanaLabs\Alloy\config.alloy" -Force
+//
+// 3. Set environment variables (replace with your Tailscale MagicDNS names):
+//      [System.Environment]::SetEnvironmentVariable(
+//        "PROMETHEUS_URL","https://prometheus-homelab.<tailnet>.ts.net/api/v1/write","Machine")
+//      [System.Environment]::SetEnvironmentVariable(
+//        "LOKI_URL","https://loki-homelab.<tailnet>.ts.net/loki/api/v1/push","Machine")
+//      [System.Environment]::SetEnvironmentVariable(
+//        "TEMPO_URL","https://tempo-homelab.<tailnet>.ts.net","Machine")
+//
+// 4. Restart the service:
+//      Restart-Service "Alloy"
+//
+// ================================================================
+
+// ────────────────────────────────────────────────────────────
+// METRICS  —  Windows System
+// ────────────────────────────────────────────────────────────
+prometheus.exporter.windows "host" {
+  enabled_collectors = [
+    "cpu",
+    "cs",           // Computer system info
+    "logical_disk",
+    "memory",
+    "net",
+    "os",
+    "service",
+    "system",
+    "time",
+    "thermalzone",  // CPU thermals (if available)
+  ]
+}
+
+prometheus.scrape "windows_metrics" {
+  targets         = prometheus.exporter.windows.host.targets
+  forward_to      = [prometheus.relabel.host_labels.receiver]
+  scrape_interval = "60s"
+  job_name        = "integrations/windows_exporter"
+}
+
+prometheus.relabel "host_labels" {
+  forward_to = [prometheus.remote_write.homelab.receiver]
+
+  rule {
+    action       = "replace"
+    target_label = "hostname"
+    replacement  = constants.hostname
+  }
+
+  rule {
+    action       = "replace"
+    target_label = "cluster"
+    replacement  = "homelab"
+  }
+
+  rule {
+    action       = "replace"
+    target_label = "os"
+    replacement  = "windows"
+  }
+}
+
+prometheus.remote_write "homelab" {
+  endpoint {
+    url = env("PROMETHEUS_URL")
+
+    queue_config {
+      retry_on_http_429    = true
+      max_samples_per_send = 2000
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// LOGS  —  Windows Event Logs
+// ────────────────────────────────────────────────────────────
+// Bookmark files persist the read position across Alloy restarts
+// so no events are re-sent or lost.
+
+loki.source.windowsevent "application_log" {
+  eventlog_name          = "Application"
+  use_incoming_timestamp = true
+  bookmark_path          = "C:/ProgramData/GrafanaLabs/Alloy/bookmark-app.xml"
+  forward_to             = [loki.process.host_labels.receiver]
+}
+
+loki.source.windowsevent "system_log" {
+  eventlog_name          = "System"
+  use_incoming_timestamp = true
+  bookmark_path          = "C:/ProgramData/GrafanaLabs/Alloy/bookmark-sys.xml"
+  forward_to             = [loki.process.host_labels.receiver]
+}
+
+loki.source.windowsevent "security_log" {
+  eventlog_name          = "Security"
+  use_incoming_timestamp = true
+  bookmark_path          = "C:/ProgramData/GrafanaLabs/Alloy/bookmark-sec.xml"
+  forward_to             = [loki.process.host_labels.receiver]
+}
+
+loki.process "host_labels" {
+  forward_to = [loki.write.homelab.receiver]
+
+  stage.static_labels {
+    values = {
+      hostname = constants.hostname,
+      cluster  = "homelab",
+      os       = "windows",
+    }
+  }
+
+  stage.json {
+    expressions = {
+      level = "levelText",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+}
+
+loki.write "homelab" {
+  endpoint {
+    url = env("LOKI_URL")
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// TRACES  —  OTLP Receiver → Tempo (HTTPS)
+// ────────────────────────────────────────────────────────────
+// Applications on this host point their OTLP exporter to:
+//   gRPC → localhost:4317
+//   HTTP → localhost:4318
+// Alloy receives them and forwards to Tempo over HTTPS using
+// otelcol.exporter.otlphttp (port 443, /v1/traces path appended
+// automatically). Tailscale HTTPS certificates are Let's Encrypt
+// signed — no custom CA configuration required.
+
+otelcol.receiver.otlp "app_traces" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    traces = [otelcol.exporter.otlphttp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlphttp "tempo" {
+  client {
+    // Base URL — Alloy appends /v1/traces automatically
+    endpoint = env("TEMPO_URL")
+  }
+}

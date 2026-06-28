@@ -1,0 +1,103 @@
+# kube-prometheus-stack values — Homelab (Tailscale)
+#
+# Retrieve Grafana credentials:
+#   kubectl get secret kube-prometheus-stack-grafana -n monitoring \
+#     -o jsonpath='{.data.admin-password}' | base64 -d && echo
+
+# ─────────────────────────────────────────────────────────────
+# GRAFANA
+# ─────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+
+  # ClusterIP — HTTPS access is handled by grafana-ingress
+  # in tailscale-ingress.yaml
+  service:
+    type: ClusterIP
+
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      access: proxy
+      isDefault: false
+      jsonData:
+        derivedFields:
+          - datasourceUid: tempo
+            matcherRegex: "traceID=(\\w+)"
+            name: TraceID
+            url: "${__value.raw}"
+
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      access: proxy
+      isDefault: false
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: loki
+          filterByTraceID: true
+        lokiSearch:
+          datasourceUid: loki
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+
+# ─────────────────────────────────────────────────────────────
+# PROMETHEUS
+# ─────────────────────────────────────────────────────────────
+prometheus:
+  # ClusterIP — HTTPS access is handled by prometheus-ingress
+  # in tailscale-ingress.yaml
+  service:
+    type: ClusterIP
+
+  prometheusSpec:
+    enableRemoteWriteReceiver: true
+
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    retention: 30d
+    retentionSize: "45GB"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+# ─────────────────────────────────────────────────────────────
+# ALERTMANAGER
+# ─────────────────────────────────────────────────────────────
+alertmanager:
+  service:
+    type: ClusterIP
+
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+# ─────────────────────────────────────────────────────────────
+# NODE EXPORTER + KUBE-STATE-METRICS
+# ─────────────────────────────────────────────────────────────
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  service:
+    type: ClusterIP
+
+kubeStateMetrics:
+  enabled: true

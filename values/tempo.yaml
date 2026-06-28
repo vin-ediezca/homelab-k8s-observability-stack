@@ -1,0 +1,80 @@
+# Tempo values — Homelab (single binary, Tailscale)
+# Chart: tempo-1.24.4 / Tempo v2.9.0
+#
+# Do NOT set server.http_listen_port — the chart's liveness and readiness
+# probes are hardcoded to 3200. Overriding the port to anything else causes
+# a CrashLoopBackOff even though Tempo itself starts fine.
+
+tempo:
+  reportingEnabled: false
+
+  # ── Trace Ingestion Receivers ──────────────────────────────
+  distributor:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      jaeger:
+        protocols:
+          thrift_http:
+            endpoint: 0.0.0.0:14268
+          grpc:
+            endpoint: 0.0.0.0:14250
+
+  # ── Ingester ───────────────────────────────────────────────
+  ingester:
+    trace_idle_period: 10s
+    max_block_duration: 5m
+
+  # ── Storage ────────────────────────────────────────────────
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      wal:
+        path: /var/tempo/wal
+
+  # ── Compaction / Retention ─────────────────────────────────
+  compactor:
+    compaction:
+      block_retention: 720h   # 30 days
+
+  # ── Metrics Generator ──────────────────────────────────────
+  # Derives RED metrics from traces → Prometheus.
+  # Processors are activated via overrides.defaults below.
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+    processor:
+      service_graphs:
+        max_items: 10000
+      span_metrics:
+        dimensions: []
+
+  # ── Overrides (activate processors for default tenant) ─────
+  # Key is "overrides", not "global_overrides"
+  overrides:
+    defaults:
+      metrics_generator:
+        processors:
+          - service-graphs
+          - span-metrics
+
+# ─────────────────────────────────────────────────────────────
+# SERVICE
+# ClusterIP — HTTPS access is handled by tempo-ingress
+# in tailscale-ingress.yaml
+# ─────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+
+# ─────────────────────────────────────────────────────────────
+# PERSISTENCE
+# ─────────────────────────────────────────────────────────────
+persistence:
+  enabled: true
+  size: 20Gi
