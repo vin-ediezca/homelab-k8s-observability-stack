@@ -28,7 +28,7 @@ across your Tailscale network.
   │           │ cluster-internal   │                     │            │
   │           └────────────────────▼─────────────────────┘            │
   │                         ┌───────────┐                             │
-  │  grafana-homelab ──────▶│  Grafana  │                             │
+  │  grafana-homelab ─────> │  Grafana  │                             │
   │  (Tailscale)            └───────────┘                             │
   │                                                                   │
   │                    Kubernetes Cluster                             │
